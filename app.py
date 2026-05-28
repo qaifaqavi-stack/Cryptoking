@@ -83,20 +83,19 @@ TOTAL_FEE_PCT = (FEES["taker"] + FEES["slippage"]) * 2
 # ══════════════════════════════════════════════════════════════════════════════
 V12_CONFIG = {
     "min_confluence_score":   70,
-    "min_ml_confidence":      0.53,   # V12.1: lowered from 0.65; partial credit 0.53-0.60
-    "min_whale_score":        5.0,    # V12.1: 6.0 → 5.0; dynamic threshold compensates
-    "min_adx":                22,     # V12.1: 25 → 22; dynamic threshold adds stricter check in weak trend
+    "min_ml_confidence":      0.53,
+    "min_whale_score":        5.0,
+    "min_adx":                22,
     "triple_htf_required":    True,
     "session_filter":         True,
     "volume_confirm":         True,
     "min_rr":                 2.5,
     "fib_confluence":         True,
     "candle_close_confirm":   True,
-    # V12.1 new
-    "ob_approach_pct":        0.6,    # was 0.4% — wider approach window
-    "t4_adx_min":             28,     # Tier 4 minimum ADX
-    "t4_min_rr":              2.0,    # Tier 4 minimum R:R (slightly lower)
-    "dynamic_threshold_max":  12,     # Maximum confluence reduction in points
+    "ob_approach_pct":        0.6,
+    "t4_adx_min":             28,
+    "t4_min_rr":              2.0,
+    "dynamic_threshold_max":  12,
 }
 
 TIER_COLORS = {
@@ -109,9 +108,9 @@ TIER_COLORS = {
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
-# LOGIN — V12.1: PBKDF2 with salt (more secure than plain SHA256)
+# LOGIN — V12.1: PBKDF2 with salt
 # ══════════════════════════════════════════════════════════════════════════════
-_SALT = b"cryptobot_v12_salt_2024"   # In production: use os.urandom(16) stored securely
+_SALT = b"cryptobot_v12_salt_2024"
 
 def _hash(pw: str) -> str:
     return hashlib.pbkdf2_hmac("sha256", pw.encode(), _SALT, 100_000).hex()
@@ -446,37 +445,31 @@ def _manual_rsi(series, window=14):
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
-    # EMAs — V12.1 adds EMA34 for Tier 4 momentum entries
     for s in [9, 21, 34, 50, 100, 200]:
         df[f"EMA{s}"] = df["close"].ewm(span=s, adjust=False).mean()
     df["SMA20"] = df["close"].rolling(20).mean()
 
-    # VWAP
     typ        = (df["high"] + df["low"] + df["close"]) / 3
     df["VWAP"] = ((typ * df["volume"]).cumsum()
                   / df["volume"].cumsum().replace(0, np.nan))
 
-    # RSI
     if HAS_TA:
         df["RSI"] = ta.momentum.RSIIndicator(df["close"], window=14, fillna=True).rsi()
     else:
         df["RSI"] = _manual_rsi(df["close"]).bfill()
 
-    # MACD
     ema12 = df["close"].ewm(span=12, adjust=False).mean()
     ema26 = df["close"].ewm(span=26, adjust=False).mean()
     df["MACD"]      = ema12 - ema26
     df["MACD_Sig"]  = df["MACD"].ewm(span=9, adjust=False).mean()
     df["MACD_Hist"] = df["MACD"] - df["MACD_Sig"]
 
-    # ATR
     high_low   = df["high"] - df["low"]
     high_close = (df["high"] - df["close"].shift()).abs()
     low_close  = (df["low"]  - df["close"].shift()).abs()
     tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
     df["ATR"] = tr.ewm(span=14, adjust=False).mean().bfill()
 
-    # Bollinger Bands
     df["BB_Mid"]   = df["close"].rolling(20).mean()
     bb_std         = df["close"].rolling(20).std()
     df["BB_Upper"] = df["BB_Mid"] + 2 * bb_std
@@ -486,13 +479,11 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["BB_Pos"]   = ((df["close"] - df["BB_Lower"])
                       / (df["BB_Upper"] - df["BB_Lower"]).replace(0, np.nan)).fillna(0.5)
 
-    # Stochastic
     lo14 = df["low"].rolling(14).min()
     hi14 = df["high"].rolling(14).max()
     df["Stoch_K"] = 100 * (df["close"] - lo14) / (hi14 - lo14 + 1e-10)
     df["Stoch_D"] = df["Stoch_K"].rolling(3).mean()
 
-    # ADX (manual)
     df["DM_Plus"]  = np.where(
         (df["high"] - df["high"].shift(1)) > (df["low"].shift(1) - df["low"]),
         np.maximum(df["high"] - df["high"].shift(1), 0), 0)
@@ -571,7 +562,6 @@ def get_fibonacci_levels(df, lookback=100) -> dict:
     if rng == 0: return {}
 
     levels = {
-        # Retracement levels
         "0.0":    high,
         "0.236":  high - 0.236 * rng,
         "0.382":  high - 0.382 * rng,
@@ -579,7 +569,6 @@ def get_fibonacci_levels(df, lookback=100) -> dict:
         "0.618":  high - 0.618 * rng,
         "0.786":  high - 0.786 * rng,
         "1.0":    low,
-        # Bullish extensions (above high)
         "1.272":  high + 0.272 * rng,
         "1.618":  high + 0.618 * rng,
         # ✅ V12.1 FIX: Bearish extensions (below low) — were missing in V12
@@ -597,7 +586,7 @@ def is_near_fib(price: float, fib_data: dict, tolerance_pct: float = 0.003) -> t
     return False, ""
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ORDER BLOCK DETECTION — No Lookahead Bias (same as V12, correct)
+# ORDER BLOCK DETECTION
 # ══════════════════════════════════════════════════════════════════════════════
 def detect_order_blocks(df: pd.DataFrame):
     lookback = cfg["OB_LOOKBACK"]
@@ -617,7 +606,7 @@ def detect_order_blocks(df: pd.DataFrame):
         volume  = float(rec["volume"].iloc[i])
         vol_ma  = float(rec["Vol_MA20"].iloc[i]) if "Vol_MA20" in rec.columns else volume
 
-        if c_close < c_open:   # bearish candle → potential demand zone
+        if c_close < c_open:
             if i + 2 < n:
                 next_close = float(rec["close"].iloc[i+2])
                 if next_close > c_open:
@@ -637,7 +626,7 @@ def detect_order_blocks(df: pd.DataFrame):
                             "strength":    min(10, round(impulse * 100 * (volume/max(vol_ma,1e-10)), 1)),
                         })
 
-        elif c_close > c_open:  # bullish candle → potential supply zone
+        elif c_close > c_open:
             if i + 2 < n:
                 next_close = float(rec["close"].iloc[i+2])
                 if next_close < c_open:
@@ -783,14 +772,14 @@ def get_htf_bias(df_htf) -> tuple:
         float(last["MACD_Hist"]) > 0,
     ]
     bull = sum(checks); tot = len(checks)
-    if bull >= 6:        return "BULL",    f"HTF Bullish ({bull}/{tot})"
-    elif (tot-bull) >= 6: return "BEAR",   f"HTF Bearish ({tot-bull}/{tot})"
-    else:                return "NEUTRAL", f"HTF Neutral (B:{bull}/Br:{tot-bull})"
+    if bull >= 6:         return "BULL",    f"HTF Bullish ({bull}/{tot})"
+    elif (tot-bull) >= 6: return "BEAR",    f"HTF Bearish ({tot-bull}/{tot})"
+    else:                 return "NEUTRAL", f"HTF Neutral (B:{bull}/Br:{tot-bull})"
 
 def get_triple_htf_bias(df_entry, df_mid, df_high) -> tuple:
     """
-    ✅ V12.1 FIX: Function signature is correct — caller was passing wrong args in V12.
-    Now correctly called as get_triple_htf_bias(df, df_mid, df_htf).
+    ✅ V12.1 FIX: Correctly called as get_triple_htf_bias(df, df_mid, df_htf).
+    V12 was passing (df_mid, df_htf, df_htf) — entry TF was wrong.
     """
     bias_e, desc_e = get_htf_bias(df_entry)
     bias_m, desc_m = get_htf_bias(df_mid)
@@ -840,13 +829,6 @@ def classify_regime(df):
 # V12.1: DYNAMIC CONFLUENCE THRESHOLD
 # ══════════════════════════════════════════════════════════════════════════════
 def get_dynamic_threshold(htf_strength_pct, adx_val, is_overlap, regime, bos_vol_confirmed) -> tuple:
-    """
-    V12.1 NEW: Context-aware confluence reduction.
-    When market context is crystal clear, individual factor requirements relax slightly.
-    This is NOT lowering standards — it's recognizing that strong context compensates.
-
-    Returns: (effective_threshold: int, reduction: int, reasons: list)
-    """
     base = cfg["MIN_CONFLUENCE"]
     reduction = 0
     reasons = []
@@ -897,13 +879,9 @@ FEATURE_COLS = [
 ]
 
 def make_labels(df, forward_candles=3, threshold_pct=None) -> np.ndarray:
-    """
-    V12.1: ATR-adaptive threshold — scales with market volatility.
-    High-volatility markets need a bigger move to be labeled; prevents noise labels.
-    """
+    """V12.1: ATR-adaptive threshold — scales with market volatility."""
     close = df["close"].values
 
-    # Adaptive threshold based on recent ATR
     if threshold_pct is None:
         if "ATR" in df.columns and len(df) > 50:
             recent_atr   = float(df["ATR"].tail(50).mean())
@@ -1094,11 +1072,10 @@ def _empty_whale():
             "cvd_ratio": 0.5, "cvd_trend": "NEUTRAL", "total": 0}
 
 def calc_whale_score(ob_data, wc, signal) -> tuple:
-    """V12.1: More granular 0.5pt steps for precision."""
+    """V12.1: Granular 0.5pt steps for precision."""
     pts, notes = 0.0, []
     is_bull = "BUY" in signal
 
-    # Order book (max 5.5pts)
     if ob_data.get("available"):
         s = ob_data["ob_signal"]
         if is_bull:
@@ -1113,7 +1090,6 @@ def calc_whale_score(ob_data, wc, signal) -> tuple:
     else:
         pts += 1.0; notes.append("OB unavailable (neutral)")
 
-    # CVD (max 3.5pts)
     cvd, cvd_r = wc["cvd_trend"], wc["cvd_ratio"]
     if (is_bull and cvd == "BULL") or (not is_bull and cvd == "BEAR"):
         alignment = max(0.0, (cvd_r if is_bull else 1-cvd_r) - 0.60) / 0.40
@@ -1124,12 +1100,10 @@ def calc_whale_score(ob_data, wc, signal) -> tuple:
     else:
         pts += 0.0; notes.append("CVD opposing (−)")
 
-    # Whale candle (max 2pt)
     rw = wc.get("recent")
     if rw:
         match = (is_bull and rw["direction"]=="BUY") or (not is_bull and rw["direction"]=="SELL")
         if match:
-            # Stronger whale = more points
             bonus = min(2.0, rw["vol_ratio"] / cfg["WHALE_VOL_THRESH"])
             pts += bonus; notes.append(f"Whale {rw['type']} {rw['vol_ratio']}x")
         else:
@@ -1222,7 +1196,7 @@ def find_second_liquidity(price, direction, tp1, df, bull_obs, bear_obs, structu
         return (float(max(cands)), "2nd Swing Low / Demand") if cands else (None, "")
 
 # ══════════════════════════════════════════════════════════════════════════════
-# V12.1: WEIGHTED CONFLUENCE ENGINE — Dynamic threshold + ML partial credit
+# V12.1: WEIGHTED CONFLUENCE ENGINE
 # ══════════════════════════════════════════════════════════════════════════════
 def calculate_confluence_v12(
     signal_dir, htf_bias, htf_strength_pct,
@@ -1234,13 +1208,6 @@ def calculate_confluence_v12(
     dynamic_threshold=70,
     is_overlap=False,
 ) -> dict:
-    """
-    V12.1: 100-point weighted confluence with:
-    - Dynamic threshold (context-aware)
-    - ML partial credit at 53%+ (was all-or-nothing)
-    - Session quality as dedicated factor
-    - Only blocks if ML strongly conflicts (≥65% opposing)
-    """
     factors = {}
     is_buy  = "BUY" in signal_dir
 
@@ -1271,7 +1238,6 @@ def calculate_confluence_v12(
                                 "note": f2_note, "pct": f2_score/20}
 
     # ── Factor 3: ML Classifier (18 pts) ─────────────────────────────────────
-    # V12.1: Partial credit + only block on strong opposing signal
     ml_align   = (is_buy and ml_direction == "UP") or (not is_buy and ml_direction == "DOWN")
     ml_conflict = (is_buy and ml_direction == "DOWN") or (not is_buy and ml_direction == "UP")
 
@@ -1279,13 +1245,13 @@ def calculate_confluence_v12(
         f3_score, f3_status = 18, "✅"; f3_note = f"ML {ml_direction} {ml_confidence:.0%} confident"
     elif ml_align and ml_confidence >= 0.60:
         f3_score, f3_status = 12, "🟡"; f3_note = f"ML {ml_direction} {ml_confidence:.0%} — moderate"
-    elif ml_align and ml_confidence >= 0.53:          # V12.1: partial credit
+    elif ml_align and ml_confidence >= 0.53:
         f3_score, f3_status = 7, "🟡";  f3_note = f"ML {ml_direction} {ml_confidence:.0%} — partial"
     elif ml_direction == "NEUTRAL":
         f3_score, f3_status = 5, "⚪";  f3_note = "ML neutral"
-    elif ml_conflict and ml_confidence >= 0.65:       # Strong conflict
+    elif ml_conflict and ml_confidence >= 0.65:
         f3_score, f3_status = 0, "❌";  f3_note = f"ML {ml_direction} STRONGLY CONFLICTS ({ml_confidence:.0%})"
-    else:                                              # Weak conflict or very low conf
+    else:
         f3_score, f3_status = 2, "🟠";  f3_note = f"ML weak signal ({ml_confidence:.0%})"
     factors["ML Classifier"] = {"score": f3_score, "max": 18, "status": f3_status,
                                  "note": f3_note, "pct": f3_score/18}
@@ -1309,16 +1275,16 @@ def calculate_confluence_v12(
     struct_align = (is_buy and stype in ("UPTREND","BREAKOUT")) or \
                    (not is_buy and stype in ("DOWNTREND","BREAKDOWN"))
     f5_score = 0
-    if struct_align:   f5_score += 9
+    if struct_align:         f5_score += 9
     elif stype == "RANGING": f5_score += 2
-    if fib_near:       f5_score += 4
+    if fib_near:             f5_score += 4
     f5_score  = min(13, f5_score)
     f5_status = "✅" if f5_score >= 10 else "🟡" if f5_score >= 5 else "⚪"
     f5_note   = f"Structure: {stype}" + (f" | Fib: {fib_label}" if fib_near else "")
     factors["Structure+Fib"] = {"score": f5_score, "max": 13, "status": f5_status,
                                  "note": f5_note, "pct": f5_score/13}
 
-    # ── Factor 6: Session + ADX Quality (7 pts) — V12.1 NEW ─────────────────
+    # ── Factor 6: Session + ADX Quality (7 pts) ──────────────────────────────
     if is_overlap and adx_val >= 28:
         f6_score, f6_status = 7, "✅"; f6_note = f"🌟 Overlap session + ADX {adx_val:.0f}"
     elif is_overlap:
@@ -1334,15 +1300,14 @@ def calculate_confluence_v12(
 
     # ── Total ─────────────────────────────────────────────────────────────────
     total_score = sum(f["score"] for f in factors.values())
-    max_score   = sum(f["max"]   for f in factors.values())   # = 100
+    max_score   = sum(f["max"]   for f in factors.values())
     pct_score   = round(total_score / max(max_score, 1) * 100)
 
-    # ── Block Checks (V12.1: smart blocking) ─────────────────────────────────
+    # ── Block Checks ─────────────────────────────────────────────────────────
     blocks = []
     if pct_score < dynamic_threshold:
         blocks.append(f"Confluence {pct_score}% < dynamic threshold {dynamic_threshold}%")
 
-    # V12.1: Only block if ML STRONGLY conflicts (≥65% confidence in opposite direction)
     if ml_conflict and ml_confidence >= 0.65:
         blocks.append(f"ML strongly predicts {ml_direction} ({ml_confidence:.0%}) vs {signal_dir}")
 
@@ -1365,14 +1330,14 @@ def calculate_confluence_v12(
         blocks.append("RANGING + low ADX — no edge")
 
     return {
-        "factors":         factors,
-        "total_score":     total_score,
-        "max_score":       max_score,
-        "pct_score":       pct_score,
-        "is_valid":        len(blocks) == 0,
-        "block_reasons":   blocks,
-        "ml_align":        ml_align,
-        "fib_near":        fib_near,
+        "factors":           factors,
+        "total_score":       total_score,
+        "max_score":         max_score,
+        "pct_score":         pct_score,
+        "is_valid":          len(blocks) == 0,
+        "block_reasons":     blocks,
+        "ml_align":          ml_align,
+        "fib_near":          fib_near,
         "dynamic_threshold": dynamic_threshold,
     }
 
@@ -1457,11 +1422,11 @@ def validate_wallet(trade, open_trades=0):
     entry    = trade.get("entry", 0)
     net_tp1  = round(pos * abs(tp1 - entry) / max(entry, 1e-10) - fee_cost, 2)
     return {
-        "valid":         len(issues) == 0,
-        "issues":        issues,
-        "liq_buffer":    liq_buf,
+        "valid":          len(issues) == 0,
+        "issues":         issues,
+        "liq_buffer":     liq_buf,
         "tp1_profit_usd": net_tp1,
-        "max_loss_usd":  round(pos * trade["sl_pct"] / 100, 2),
+        "max_loss_usd":   round(pos * trade["sl_pct"] / 100, 2),
     }
 
 def build_trade(tier, direction, price, sl, sl_pct, tp, rr, ob,
@@ -1521,18 +1486,8 @@ def make_hold(reason, confluence=None) -> dict:
 def check_tier4_momentum(price, df, htf_bias, htf_strength_pct, adx_val,
                           ml_direction, ml_confidence, structure,
                           bull_obs, bear_obs) -> dict | None:
-    """
-    V12.1 NEW: Tier 4 — EMA21 pullback entries in strong triple-aligned trends.
-    Conditions:
-    - Triple HTF 100% aligned (strict — Tier 4 has no OB safety net)
-    - ADX > t4_adx_min (default 28)
-    - Price within 0.5% of EMA21 (pullback entry)
-    - EMA21 > EMA50 (bull) or EMA21 < EMA50 (bear) — trend intact
-    - ML confirms direction (53%+)
-    - Structure confirms direction
-    """
     if not cfg.get("ENABLE_T4", True): return None
-    if htf_strength_pct < 100: return None         # Strict: ALL three must agree
+    if htf_strength_pct < 100: return None
     if adx_val < V12_CONFIG["t4_adx_min"]: return None
 
     last  = df.iloc[-1]
@@ -1541,14 +1496,14 @@ def check_tier4_momentum(price, df, htf_bias, htf_strength_pct, adx_val,
 
     dist_to_ema21 = abs(price - ema21) / max(price, 1e-10) * 100
 
-    if dist_to_ema21 > 0.5: return None  # Not close enough to EMA21
+    if dist_to_ema21 > 0.5: return None
 
     if htf_bias == "BULL":
-        if not (ema21 > ema50): return None  # Trend not intact
+        if not (ema21 > ema50): return None
         if structure.get("type") not in ("UPTREND", "BREAKOUT", "TRENDING_UP"): return None
         if not (ml_direction == "UP" and ml_confidence >= 0.53): return None
 
-        sl     = min(ema50, price * 0.9975) * 0.997   # SL below EMA50 or -0.25%
+        sl     = min(ema50, price * 0.9975) * 0.997
         sl_pct = (price - sl) / max(price, 1e-10) * 100
         if sl_pct < 0.1 or sl_pct > WALLET_CONFIG["max_sl_pct"]: return None
         return {"direction": "BUY", "sl": sl, "sl_pct": sl_pct,
@@ -1568,7 +1523,7 @@ def check_tier4_momentum(price, df, htf_bias, htf_strength_pct, adx_val,
     return None
 
 # ══════════════════════════════════════════════════════════════════════════════
-# V12.1 TRADE FINDER — Dynamic threshold + Tier 4 + Extended OB range
+# V12.1 TRADE FINDER
 # ══════════════════════════════════════════════════════════════════════════════
 def find_best_trade_v12(
     price, bull_obs, bear_obs, structure,
@@ -1691,7 +1646,7 @@ def find_best_trade_v12(
                         else:
                             return make_hold(f"T2 SELL blocked: {' | '.join(conf['block_reasons'])}", conf)
 
-    # ── TIER 3: BOS + Structure + HTF ───────────────────────────────────────
+    # ── TIER 3: BOS + Structure + HTF ────────────────────────────────────────
     if "BOS_UP" in bos_type and htf_bias == "BULL" and htf_strength_pct >= 65:
         if structure["type"] in ("UPTREND","BREAKOUT"):
             last_low = structure.get("last_low") or structure.get("prev_low")
@@ -1733,22 +1688,21 @@ def find_best_trade_v12(
                                ml_direction, ml_confidence, structure,
                                bull_obs, bear_obs)
     if t4:
-        sl     = t4["sl"]
-        sl_pct = t4["sl_pct"]
+        sl        = t4["sl"]
+        sl_pct    = t4["sl_pct"]
         direction = t4["direction"]
         dir_label = "bull" if direction == "BUY" else "bear"
         tp, tp_type = find_nearest_liquidity(price, dir_label, df, bull_obs, bear_obs, structure, sl_pct)
         if tp:
-            rr = (abs(tp - price)) / max(abs(price - sl), 1e-10)
+            rr        = (abs(tp - price)) / max(abs(price - sl), 1e-10)
             t4_min_rr = V12_CONFIG["t4_min_rr"]
             if rr >= t4_min_rr:
                 conf = check_conf(direction, rr_override=t4_min_rr)
                 if conf["is_valid"]:
                     log.success(f"⭐ T4 EMA Momentum {direction} | {conf['pct_score']}% | {t4['entry_type']}")
-                    trade = build_trade("TIER_4", direction, price, sl, sl_pct, tp, rr,
-                                        None, t4["entry_type"] + f" | {tp_type}", False, conf,
-                                        min_rr_override=t4_min_rr)
-                    return trade
+                    return build_trade("TIER_4", direction, price, sl, sl_pct, tp, rr,
+                                       None, t4["entry_type"] + f" | {tp_type}", False, conf,
+                                       min_rr_override=t4_min_rr)
                 else:
                     log.info(f"T4 blocked: {conf['block_reasons'][0] if conf['block_reasons'] else 'confluence'}")
 
@@ -1813,7 +1767,6 @@ def run_analysis_v12():
         regime, regime_desc = classify_regime(df)
 
         # ✅ V12.1 FIX: Pass correct dataframes — was (df_mid, df_htf, df_htf) in V12
-        # Correct: entry TF (df), mid HTF (df_mid), high HTF (df_htf)
         htf_bias, htf_desc, htf_strength_pct, triple_biases = get_triple_htf_bias(
             df, df_mid, df_htf)
         log.info(f"HTF: {htf_bias} ({htf_strength_pct}%) — {triple_biases}")
@@ -1873,7 +1826,6 @@ def run_analysis_v12():
             is_overlap=is_overlap,
         )
 
-        # Recalc whale for actual signal direction
         ws, wl, wn = calc_whale_score(ob_res, wc_res, trade["signal"])
 
         # ── TP2 ──────────────────────────────────────────────────────────────
@@ -1969,7 +1921,6 @@ st.sidebar.markdown("---")
 icon = "🌟" if is_overlap_s else ("🟢" if session_ok_s else "🔴")
 st.sidebar.markdown(f"**{icon} Session:** {session_desc_s[:35]}")
 
-# Signal history in sidebar
 if st.session_state.get("signal_history"):
     st.sidebar.markdown("---")
     st.sidebar.subheader("📋 Signal History")
@@ -2028,7 +1979,6 @@ if run_btn:
             unsafe_allow_html=True)
         st.caption(res.get("reason",""))
 
-        # V12.1 Dynamic Threshold Panel
         dyn_t   = res.get("dyn_threshold", cfg["MIN_CONFLUENCE"])
         dyn_red = res.get("dyn_reduction", 0)
         if dyn_red > 0:
@@ -2046,7 +1996,7 @@ if run_btn:
         is_valid   = confluence.get("is_valid", False)
         blocks     = confluence.get("block_reasons", [])
 
-        bar_col = "#00ff88" if pct_score >= 70 else "#f0883e" if pct_score >= 50 else "#f85149"
+        bar_col          = "#00ff88" if pct_score >= 70 else "#f0883e" if pct_score >= 50 else "#f85149"
         threshold_marker = int(dyn_t)
         st.markdown(
             f'<div style="background:#21262d;border-radius:8px;height:32px;margin:8px 0;position:relative;">'
@@ -2061,7 +2011,6 @@ if run_btn:
             f'</div>',
             unsafe_allow_html=True)
 
-        # Factor cards
         if factors:
             factor_list = list(factors.items())
             cols = st.columns(len(factor_list))
@@ -2095,7 +2044,6 @@ if run_btn:
 
         st.markdown("---")
 
-        # Key metrics
         c1,c2,c3,c4,c5,c6 = st.columns(6)
         c1.metric("Entry",   f"{res['entry']:.6f}" if res.get('entry') else "—")
         c2.metric(f"SL ({res.get('sl_pct',0):.2f}%)", f"{res['sl']:.6f}" if res.get('sl') else "—")
@@ -2115,7 +2063,6 @@ if run_btn:
 
         st.markdown("---")
 
-        # Chart
         df_plot = res.get("df")
         if df_plot is not None and sig != "HOLD":
             st.subheader("📈 Price Chart with Key Levels")
@@ -2195,9 +2142,9 @@ if run_btn:
         ml_accs = res.get("ml_accs", [])
 
         m1,m2,m3,m4 = st.columns(4)
-        m1.metric("Direction",       ml_d)
-        m2.metric("Confidence",      f"{ml_c:.1%}")
-        m3.metric("WF Mean Acc",     f"{ml_a:.1%}")
+        m1.metric("Direction",        ml_d)
+        m2.metric("Confidence",       f"{ml_c:.1%}")
+        m3.metric("WF Mean Acc",      f"{ml_a:.1%}")
         m4.metric("Splits Validated", str(len(ml_accs)))
 
         st.info(
@@ -2226,7 +2173,7 @@ if run_btn:
             st.pyplot(fig2)
             plt.close(fig2)
 
-            if ml_a >= 0.60: st.success(f"✅ ML accuracy {ml_a:.1%} — solid edge")
+            if ml_a >= 0.60:   st.success(f"✅ ML accuracy {ml_a:.1%} — solid edge")
             elif ml_a >= 0.52: st.warning(f"🟡 ML accuracy {ml_a:.1%} — marginal edge")
             else:              st.error(f"❌ ML accuracy {ml_a:.1%} — below random")
         else:
@@ -2244,10 +2191,11 @@ if run_btn:
                 ext_type = "🐻 Bearish Ext" if lbl.startswith("-") else \
                            "🐂 Bullish Ext" if float(lbl) > 1.0 else "📊 Retracement"
                 fib_rows.append({
-                    "Level": lbl, "Type": ext_type,
-                    "Price": f"{lvl:.6f}",
+                    "Level":    lbl,
+                    "Type":     ext_type,
+                    "Price":    f"{lvl:.6f}",
                     "Distance": f"{dist_pct:+.2f}%",
-                    "Near?": "🎯 YES" if near else "",
+                    "Near?":    "🎯 YES" if near else "",
                 })
             st.dataframe(pd.DataFrame(fib_rows), use_container_width=True)
         else:
@@ -2268,14 +2216,10 @@ if run_btn:
         ob_c5.metric("OB Approach",   f"{V12_CONFIG['ob_approach_pct']}% range")
         st.caption(res.get("bos_desc",""))
 
-        # Liquidity path
         st.markdown("---")
         st.subheader("🎯 Liquidity Path")
         lc1,lc2,lc3,lc4,lc5 = st.columns([2,1,2,1,2])
         with lc1:
-            # ✅ FIX: was f'{res["entry"]:.6f if res.get("entry") else "—"}'
-            # Python parsed :.6f if ... else "—" as an invalid format spec.
-            # Correct: use a conditional expression that returns the formatted string.
             entry_display = "—" if not res.get("entry") else "{:.6f}".format(res["entry"])
             st.markdown(
                 f'<div style="background:#0d1117;border:1px solid #21262d;border-radius:8px;'
@@ -2321,7 +2265,8 @@ if run_btn:
                          "Strength":   ob.get("strength", 0)}
                         for ob in sorted(res["bull_obs"], key=lambda x: x.get("strength",0), reverse=True)]
                 st.dataframe(pd.DataFrame(rows), use_container_width=True)
-            else: st.info("No bullish demand zones")
+            else:
+                st.info("No bullish demand zones")
 
         with st.expander(f"🔴 Supply Zones ({len(res['bear_obs'])})", expanded=True):
             if res["bear_obs"]:
@@ -2333,7 +2278,8 @@ if run_btn:
                          "Strength":   ob.get("strength", 0)}
                         for ob in sorted(res["bear_obs"], key=lambda x: x.get("strength",0), reverse=True)]
                 st.dataframe(pd.DataFrame(rows), use_container_width=True)
-            else: st.info("No bearish supply zones")
+            else:
+                st.info("No bearish supply zones")
 
     # ═══════════════════════════════════════════════════════════════════════
     # TAB 4 — WALLET
@@ -2341,12 +2287,12 @@ if run_btn:
     with tab4:
         st.subheader("💼 Wallet & Risk Management")
         w1,w2,w3,w4,w5,w6 = st.columns(6)
-        w1.metric("Balance",   f"${WALLET_CONFIG['total_balance']}")
-        w2.metric("Margin",    f"${WALLET_CONFIG['margin_per_trade']}")
-        w3.metric("Leverage",  f"{WALLET_CONFIG['leverage']}x")
-        w4.metric("Position",  f"${WALLET_CONFIG['position_size']}")
-        w5.metric("Max SL",    f"{WALLET_CONFIG['max_sl_pct']}%")
-        w6.metric("Min R:R",   f"1:{WALLET_CONFIG['min_rr']}")
+        w1.metric("Balance",  f"${WALLET_CONFIG['total_balance']}")
+        w2.metric("Margin",   f"${WALLET_CONFIG['margin_per_trade']}")
+        w3.metric("Leverage", f"{WALLET_CONFIG['leverage']}x")
+        w4.metric("Position", f"${WALLET_CONFIG['position_size']}")
+        w5.metric("Max SL",   f"{WALLET_CONFIG['max_sl_pct']}%")
+        w6.metric("Min R:R",  f"1:{WALLET_CONFIG['min_rr']}")
 
         st.info(
             "🆕 **V12.1 Risk Note:** Tier 4 momentum trades use min R:R 2.0 (vs 2.5 for Tiers 1-3). "
@@ -2356,34 +2302,34 @@ if run_btn:
 
         st.markdown("---")
         st.subheader("🛡 Safety Analysis")
-        sl_pct = res.get("sl_pct", 0)
+        sl_pct  = res.get("sl_pct", 0)
         liq_pct = WALLET_CONFIG["liquidation_pct"]
         buf     = liq_pct - sl_pct
         sa1,sa2,sa3 = st.columns(3)
-        sa1.metric("Trade SL",       f"{sl_pct:.2f}%")
-        sa2.metric("Liq Distance",   f"{liq_pct:.1f}%")
-        sa3.metric("Safety Buffer",  f"{buf:.2f}%",
+        sa1.metric("Trade SL",      f"{sl_pct:.2f}%")
+        sa2.metric("Liq Distance",  f"{liq_pct:.1f}%")
+        sa3.metric("Safety Buffer", f"{buf:.2f}%",
                    "🟢 Safe" if buf >= 4 else "🟡 OK" if buf >= 2 else "🔴 Danger")
 
         st.markdown("---")
         st.subheader("📊 Trade Scenarios")
-        pos       = WALLET_CONFIG["position_size"]
-        price_e   = res.get("entry") or res.get("price", 1)
-        tp1_val   = res.get("tp1")
-        tp2_val   = res.get("tp2")
-        fee_cost  = pos * TOTAL_FEE_PCT
-        sl_loss   = round(pos * sl_pct / 100, 2)
-        tp1_gain  = round(pos * abs((tp1_val or price_e) - price_e) / max(price_e,1e-10) - fee_cost, 2) \
-                    if isinstance(tp1_val, float) else 0
-        tp2_gain  = round(pos * abs((tp2_val or price_e) - price_e) / max(price_e,1e-10) - fee_cost, 2) \
-                    if isinstance(tp2_val, float) else 0
-        bal       = WALLET_CONFIG["total_balance"]
+        pos      = WALLET_CONFIG["position_size"]
+        price_e  = res.get("entry") or res.get("price", 1)
+        tp1_val  = res.get("tp1")
+        tp2_val  = res.get("tp2")
+        fee_cost = pos * TOTAL_FEE_PCT
+        sl_loss  = round(pos * sl_pct / 100, 2)
+        tp1_gain = round(pos * abs((tp1_val or price_e) - price_e) / max(price_e,1e-10) - fee_cost, 2) \
+                   if isinstance(tp1_val, float) else 0
+        tp2_gain = round(pos * abs((tp2_val or price_e) - price_e) / max(price_e,1e-10) - fee_cost, 2) \
+                   if isinstance(tp2_val, float) else 0
+        bal      = WALLET_CONFIG["total_balance"]
         scenarios = pd.DataFrame([
-            {"Scenario": "✅ TP1 Hit",       "P&L": f"+${tp1_gain}", "Wallet After": f"${bal+tp1_gain:.0f}"},
-            {"Scenario": "🎯 TP2 Hit",       "P&L": f"+${tp2_gain}", "Wallet After": f"${bal+tp2_gain:.0f}"},
-            {"Scenario": "❌ SL Hit",        "P&L": f"-${sl_loss}",  "Wallet After": f"${bal-sl_loss:.0f}"},
-            {"Scenario": "💥 5 SL Streak",   "P&L": f"-${sl_loss*5:.2f}", "Wallet After": f"${bal-sl_loss*5:.0f}"},
-            {"Scenario": "⚠️ 10 SL Streak", "P&L": f"-${sl_loss*10:.2f}","Wallet After": f"${bal-sl_loss*10:.0f}"},
+            {"Scenario": "✅ TP1 Hit",       "P&L": f"+${tp1_gain}",       "Wallet After": f"${bal+tp1_gain:.0f}"},
+            {"Scenario": "🎯 TP2 Hit",       "P&L": f"+${tp2_gain}",       "Wallet After": f"${bal+tp2_gain:.0f}"},
+            {"Scenario": "❌ SL Hit",        "P&L": f"-${sl_loss}",        "Wallet After": f"${bal-sl_loss:.0f}"},
+            {"Scenario": "💥 5 SL Streak",   "P&L": f"-${sl_loss*5:.2f}",  "Wallet After": f"${bal-sl_loss*5:.0f}"},
+            {"Scenario": "⚠️ 10 SL Streak", "P&L": f"-${sl_loss*10:.2f}", "Wallet After": f"${bal-sl_loss*10:.0f}"},
         ])
         st.dataframe(scenarios, use_container_width=True)
 
@@ -2399,7 +2345,6 @@ if run_btn:
     with tab5:
         st.subheader("🏗 Market Context")
 
-        # Triple HTF
         st.markdown("**📡 Triple HTF Alignment (V12.1 Fix: entry TF now correct)**")
         tb  = res.get("triple_biases", ["—","—","—"])
         tfs = [cfg["TF"], cfg["MTF"], cfg["HTF"]]
@@ -2438,7 +2383,7 @@ if run_btn:
                 f'<div style="color:#8b949e;">Confidence: {s["confidence"]}%</div>'
                 f'<div style="color:#8b949e;font-size:0.85rem;">{res.get("regime_desc","")}</div>'
                 f'</div>', unsafe_allow_html=True)
-            if s.get("hh") and s.get("hl"): st.success("📈 HH + HL confirmed (strong uptrend)")
+            if s.get("hh") and s.get("hl"):  st.success("📈 HH + HL confirmed (strong uptrend)")
             elif s.get("lh") and s.get("ll"): st.error("📉 LH + LL confirmed (strong downtrend)")
 
         with mc2:
@@ -2459,16 +2404,16 @@ if run_btn:
         mc3, mc4 = st.columns(2)
         with mc3:
             st.subheader("🕯 Patterns & Divergences")
-            found = [k for k,v in res.get("patterns",{}).items() if v]
+            found = [k for k, v in res.get("patterns", {}).items() if v]
             if found:
-                        for p in found:
-                            bull_pat = p in ("bull_engulf","hammer","morn_star","pin_bar_bull")
-                            if bull_pat:
-                                st.success(f"🟢 {p.replace('_',' ').title()}")
-                            else:
-                                st.error(f"🔴 {p.replace('_',' ').title()}")
+                for p in found:
+                    bull_pat = p in ("bull_engulf", "hammer", "morn_star", "pin_bar_bull")
+                    if bull_pat:
+                        st.success(f"🟢 {p.replace('_', ' ').title()}")
                     else:
-                        st.info("No strong candlestick pattern")
+                        st.error(f"🔴 {p.replace('_', ' ').title()}")
+            else:
+                st.info("No strong candlestick pattern")
             if res.get("bull_div"): st.success("🔺 Bullish RSI/OBV Divergence")
             if res.get("bear_div"): st.error("🔻 Bearish RSI/OBV Divergence")
 
@@ -2487,7 +2432,6 @@ if run_btn:
                 st.warning(f"⚠️ {sd}")
                 st.info("V12.1 blocks trades outside London/NY to avoid false breakouts.")
 
-        # V12.1 Summary of all changes
         st.markdown("---")
         with st.expander("📋 V12.1 Changes Summary (Click to expand)", expanded=False):
             st.markdown("""
@@ -2509,7 +2453,6 @@ if run_btn:
             """)
 
 else:
-    # Landing page
     st.info("👈 Configure in sidebar → **🚀 Run V12.1 Analysis**")
     col_a, col_b = st.columns(2)
     with col_a:
@@ -2525,7 +2468,7 @@ else:
 **📉 Dynamic Confluence Threshold**
 - Context-aware, auto-reduces up to 12pts
 - Triple HTF 100% → -5pts
-- ADX > 35 → -3pts  
+- ADX > 35 → -3pts
 - London-NY Overlap → -2pts
 - Strong regime → -3pts
 - BOS vol-confirmed → -2pts
