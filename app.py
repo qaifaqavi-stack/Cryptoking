@@ -2461,14 +2461,14 @@ if run_btn:
             st.subheader("🕯 Patterns & Divergences")
             found = [k for k,v in res.get("patterns",{}).items() if v]
             if found:
-                for p in found:
-                    bull_pat = p in ("bull_engulf","hammer","morn_star","pin_bar_bull")
-                    if bull_pat:
-                    st.success(f"🟢 {p.replace('_',' ').title()}")
-            else:
-                    st.error(f"🔴 {p.replace('_',' ').title()}")
-            else:
-                st.info("No strong candlestick pattern")
+                        for p in found:
+                            bull_pat = p in ("bull_engulf","hammer","morn_star","pin_bar_bull")
+                            if bull_pat:
+                                st.success(f"🟢 {p.replace('_',' ').title()}")
+                            else:
+                                st.error(f"🔴 {p.replace('_',' ').title()}")
+                    else:
+                        st.info("No strong candlestick pattern")
             if res.get("bull_div"): st.success("🔺 Bullish RSI/OBV Divergence")
             if res.get("bear_div"): st.error("🔻 Bearish RSI/OBV Divergence")
 
