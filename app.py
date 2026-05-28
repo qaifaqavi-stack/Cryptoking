@@ -563,7 +563,7 @@ def find_nearest_liquidity(price: float, direction: str,
     Pools: Equal Highs/Lows, Swing Highs/Lows, Unmitigated OB tops/bottoms.
     Returns level only if it gives R:R >= 2.0 vs sl_pct.
     """
-    min_dist_pct = sl_pct * 2.0    # minimum R:R = 2.0
+    min_dist_pct = sl_pct * 1.5    # minimum R:R = 2.0
 
     if direction == "bull":
         candidates = []
