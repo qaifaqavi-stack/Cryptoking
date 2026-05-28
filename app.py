@@ -2055,6 +2055,4 @@ else:
 | 8 | ATR-based TP | Liquidity pool TP |
         """)
 
-    st.markdown("""
----
-### 💼 Wallet Philosophy
+    st.info("👈 Configure settings in sidebar, then click **🚀 Run Analysis**.")
