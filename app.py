@@ -2273,12 +2273,16 @@ if run_btn:
         st.subheader("🎯 Liquidity Path")
         lc1,lc2,lc3,lc4,lc5 = st.columns([2,1,2,1,2])
         with lc1:
+            # ✅ FIX: was f'{res["entry"]:.6f if res.get("entry") else "—"}'
+            # Python parsed :.6f if ... else "—" as an invalid format spec.
+            # Correct: use a conditional expression that returns the formatted string.
+            entry_display = "—" if not res.get("entry") else "{:.6f}".format(res["entry"])
             st.markdown(
                 f'<div style="background:#0d1117;border:1px solid #21262d;border-radius:8px;'
                 f'padding:12px;text-align:center;">'
                 f'<div style="color:#8b949e;font-size:0.8rem;">ENTRY</div>'
                 f'<div style="color:#58a6ff;font-weight:bold;">'
-                f'{res["entry"]:.6f if res.get("entry") else "—"}</div></div>', unsafe_allow_html=True)
+                f'{entry_display}</div></div>', unsafe_allow_html=True)
         with lc2:
             st.markdown('<div style="text-align:center;padding-top:16px;font-size:1.5rem;">→</div>',
                         unsafe_allow_html=True)
