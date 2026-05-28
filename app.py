@@ -2463,8 +2463,10 @@ if run_btn:
             if found:
                 for p in found:
                     bull_pat = p in ("bull_engulf","hammer","morn_star","pin_bar_bull")
-                    st.success(f"🟢 {p.replace('_',' ').title()}") if bull_pat \
-                    else st.error(f"🔴 {p.replace('_',' ').title()}")
+                    if bull_pat:
+                    st.success(f"🟢 {p.replace('_',' ').title()}")
+            else:
+                    st.error(f"🔴 {p.replace('_',' ').title()}")
             else:
                 st.info("No strong candlestick pattern")
             if res.get("bull_div"): st.success("🔺 Bullish RSI/OBV Divergence")
