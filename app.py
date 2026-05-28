@@ -1,10 +1,10 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║   CRYPTO BOT V10 · TIERED SL + LIQUIDITY TP EDITION                       ║
-║   ICT Order Block · Demand/Supply Zones · Break of Structure               ║
+║   ICT Order Block · Demand/Supply Zones · Break of Structure              ║
 ║   Tiered SL System (Tier1→Tier2→Tier3→WorstCase→HOLD)                     ║
-║   Liquidity-Based TP (BSL/SSL pools — not ATR)                             ║
-║   $100 Wallet · $10 Margin · 20x Leverage · 4.5% Liquidation              ║
+║   Liquidity-Based TP (BSL/SSL pools — not ATR)                            ║
+║   $100 Wallet · $10 Margin · 20x Leverage · 4.5% Liquidation             ║
 ║   5-User Login · 4-Tab UI · 8 Bugs Fixed from V9                          ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
@@ -26,7 +26,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 
-# ── Lightweight ML Only ─────────────────────────────────────────────────────
+# ── Lightweight ML Only ──────────────────────────────────────────────────────
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.linear_model import Ridge
 from sklearn.preprocessing import RobustScaler
@@ -62,6 +62,13 @@ WALLET_CONFIG = {
     "max_concurrent":   2,      # max 2 trades open at once
     "daily_loss_limit": 20,     # USD — stop trading if hit
 }
+
+# Fee & slippage configuration
+FEES = {
+    "taker": 0.0006,   # 0.06% Binance futures taker fee
+    "slippage": 0.0002 # 0.02% estimated slippage
+}
+TOTAL_FEE_PCT = (FEES["taker"] + FEES["slippage"]) * 2  # entry + exit
 
 TIER_COLORS = {
     "TIER_1":     {"bg": "#0d2818", "border": "#2ea043", "text": "#56d364"},
@@ -122,7 +129,7 @@ def login_screen():
 def check_auth():
     return st.session_state.get("authenticated", False)
 
-# ── Page Config ─────────────────────────────────────────────────────────────
+# ── Page Config ──────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Crypto Bot V10",
     page_icon="🐋",
@@ -259,7 +266,7 @@ def build_exchange_pool():
 
 ex_pool = build_exchange_pool()
 
-@st.cache_data(ttl=120, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def fetch_ohlcv(symbol: str, tf: str) -> pd.DataFrame:
     limit   = 500 if tf in ("4h","1d") else 1000
     results = []
@@ -447,11 +454,13 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ORDER BLOCK DETECTION — V10 (Bug 4 Fixed: 3-candle mitigation)
+# Bug A Fix: mitigation now checks 3 closes after the OB candle, not global last.
 # ══════════════════════════════════════════════════════════════════════════════
 def detect_order_blocks(df: pd.DataFrame):
     """
     ICT / Smart Money Order Block Detection.
-    Bug 4 Fix: mitigation requires 3 consecutive closes outside zone.
+    Bug 4 Fix: mitigation requires 3 consecutive closes after the OB candle.
+    Bug A Fix: use closes from after the OB candle, not global last 3.
     """
     lookback = cfg["OB_LOOKBACK"]
     min_move = cfg["OB_MIN_MOVE"]
@@ -462,9 +471,6 @@ def detect_order_blocks(df: pd.DataFrame):
     rec = df.tail(lookback).reset_index(drop=True)
     n   = len(rec)
     bull_obs, bear_obs = [], []
-
-    # V10 Bug 4 Fix: 3-candle consecutive close check
-    last_3_closes = df["close"].iloc[-3:].values if len(df) >= 3 else df["close"].values
 
     for i in range(1, n - 4):
         c_open  = float(rec["open"].iloc[i])
@@ -480,9 +486,11 @@ def detect_order_blocks(df: pd.DataFrame):
             future_high = rec["high"].iloc[i+1:window].max()
             impulse = (future_high - c_close) / max(c_close, 1e-10)
             if impulse >= min_move:
-                # V10 Fix: 3 consecutive closes below ob_bottom = mitigated
                 ob_bottom = c_low
-                mitigated = all(c < ob_bottom * 0.999 for c in last_3_closes)
+                # Bug A Fix: check 3 closes AFTER this OB candle
+                post_ob_closes = rec["close"].iloc[i+1:i+4].values
+                mitigated = (len(post_ob_closes) >= 3 and
+                             all(c < ob_bottom * 0.999 for c in post_ob_closes))
                 bull_obs.append({
                     "idx":         i,
                     "ob_top":      round(c_open, 8),
@@ -496,14 +504,16 @@ def detect_order_blocks(df: pd.DataFrame):
                     "label":       "🟢 Demand Zone",
                 })
 
-        # ── Bearish OB: bullish candle before downward impulse ───────────
+        # ── Bearish OB: bullish candle before downward impulse ────────────
         elif c_close > c_open:
             window = min(i + 6, n)
             future_low = rec["low"].iloc[i+1:window].min()
             impulse = (c_close - future_low) / max(c_close, 1e-10)
             if impulse >= min_move:
                 ob_top = c_high
-                mitigated = all(c > ob_top * 1.001 for c in last_3_closes)
+                post_ob_closes = rec["close"].iloc[i+1:i+4].values
+                mitigated = (len(post_ob_closes) >= 3 and
+                             all(c > ob_top * 1.001 for c in post_ob_closes))
                 bear_obs.append({
                     "idx":         i,
                     "ob_top":      round(c_high, 8),
@@ -541,9 +551,8 @@ def detect_bos(df: pd.DataFrame, structure: dict):
 
 # ══════════════════════════════════════════════════════════════════════════════
 # LIQUIDITY TP SYSTEM — V10 Core Philosophy
-# Bug 2 Fix: All parameters passed explicitly — no global scope dependency
-# Bug 7 Fix: R:R check inside function — returns None if < 2.0
-# Bug 8 Fix: TP from liquidity pools, NOT ATR
+# Bug B Fix: optimized equal highs detection (O(n²) → O(n log n))
+# Bug C Fix: Tier 2 distance logic corrected (absolute distance)
 # ══════════════════════════════════════════════════════════════════════════════
 def find_nearest_liquidity(price: float, direction: str,
                             df: pd.DataFrame,
@@ -559,15 +568,23 @@ def find_nearest_liquidity(price: float, direction: str,
     if direction == "bull":
         candidates = []
 
-        # 1. Equal Highs (strongest BSL — price visited same level 2+ times)
+        # 1. Equal Highs (strongest BSL) – optimized O(n log n)
         highs = df["high"].values[-100:]
-        for i in range(len(highs) - 1):
-            for j in range(i + 1, len(highs)):
-                hi = max(highs[i], highs[j])
-                if hi == 0:
-                    continue
-                if abs(highs[i] - highs[j]) / hi < 0.002 and hi > price * 1.001:
-                    candidates.append({"level": hi, "type": "Equal Highs (BSL)", "strength": 3})
+        sorted_highs = np.sort(highs)
+        clusters = []
+        current_cluster = [sorted_highs[0]]
+        for h in sorted_highs[1:]:
+            if abs(h - current_cluster[-1]) / max(h, 1e-10) < 0.002:
+                current_cluster.append(h)
+            else:
+                if len(current_cluster) >= 2:
+                    clusters.append(max(current_cluster))
+                current_cluster = [h]
+        if len(current_cluster) >= 2:
+            clusters.append(max(current_cluster))
+        for hi in clusters:
+            if hi > price * 1.001:
+                candidates.append({"level": float(hi), "type": "Equal Highs (BSL)", "strength": 3})
 
         # 2. Swing Highs not yet swept
         for idx, val in structure.get("swing_highs", []):
@@ -594,15 +611,23 @@ def find_nearest_liquidity(price: float, direction: str,
     else:  # bear direction — SSL
         candidates = []
 
-        # 1. Equal Lows
+        # 1. Equal Lows – optimized
         lows = df["low"].values[-100:]
-        for i in range(len(lows) - 1):
-            for j in range(i + 1, len(lows)):
-                lo = min(lows[i], lows[j])
-                if lo == 0:
-                    continue
-                if abs(lows[i] - lows[j]) / max(lows[i], 1e-10) < 0.002 and lo < price * 0.999:
-                    candidates.append({"level": lo, "type": "Equal Lows (SSL)", "strength": 3})
+        sorted_lows = np.sort(lows)
+        clusters = []
+        current_cluster = [sorted_lows[0]]
+        for l in sorted_lows[1:]:
+            if abs(l - current_cluster[-1]) / max(l, 1e-10) < 0.002:
+                current_cluster.append(l)
+            else:
+                if len(current_cluster) >= 2:
+                    clusters.append(min(current_cluster))
+                current_cluster = [l]
+        if len(current_cluster) >= 2:
+            clusters.append(min(current_cluster))
+        for lo in clusters:
+            if lo < price * 0.999:
+                candidates.append({"level": float(lo), "type": "Equal Lows (SSL)", "strength": 3})
 
         # 2. Swing Lows not yet swept
         for idx, val in structure.get("swing_lows", []):
@@ -643,14 +668,23 @@ def find_second_liquidity(price: float, direction: str, tp1: float,
         for ob in bear_obs:
             if ob["ob_bottom"] > tp1 * 1.005:
                 candidates.append(ob["ob_bottom"])
-        # Equal highs beyond TP1
+        # Equal highs beyond TP1 (simplified O(n) pass)
         highs = df["high"].values[-150:]
-        for i in range(len(highs) - 1):
-            for j in range(i + 1, len(highs)):
-                hi = max(highs[i], highs[j])
-                if hi == 0: continue
-                if abs(highs[i] - highs[j]) / hi < 0.002 and hi > tp1 * 1.005:
-                    candidates.append(hi)
+        high_above = sorted([h for h in highs if h > tp1 * 1.005])
+        if len(high_above) >= 2:
+            clusters = []
+            current = [high_above[0]]
+            for h in high_above[1:]:
+                if abs(h - current[-1]) / max(h, 1e-10) < 0.002:
+                    current.append(h)
+                else:
+                    if len(current) >= 2:
+                        clusters.append(max(current))
+                    current = [h]
+            if len(current) >= 2:
+                clusters.append(max(current))
+            for cl in clusters:
+                candidates.append(cl)
         return (float(min(candidates)), "Swing High / Equal Highs") if candidates else (None, "")
 
     else:  # bear
@@ -661,13 +695,21 @@ def find_second_liquidity(price: float, direction: str, tp1: float,
         for ob in bull_obs:
             if ob["ob_top"] < tp1 * 0.995:
                 candidates.append(ob["ob_top"])
-        lows = df["low"].values[-150:]
-        for i in range(len(lows) - 1):
-            for j in range(i + 1, len(lows)):
-                lo = min(lows[i], lows[j])
-                if lo == 0: continue
-                if abs(lows[i] - lows[j]) / max(lows[i], 1e-10) < 0.002 and lo < tp1 * 0.995:
-                    candidates.append(lo)
+        lows_below = sorted([l for l in df["low"].values[-150:] if l < tp1 * 0.995], reverse=True)
+        if len(lows_below) >= 2:
+            clusters = []
+            current = [lows_below[0]]
+            for l in lows_below[1:]:
+                if abs(l - current[-1]) / max(l, 1e-10) < 0.002:
+                    current.append(l)
+                else:
+                    if len(current) >= 2:
+                        clusters.append(min(current))
+                    current = [l]
+            if len(current) >= 2:
+                clusters.append(min(current))
+            for cl in clusters:
+                candidates.append(cl)
         return (float(max(candidates)), "Swing Low / Equal Lows") if candidates else (None, "")
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -699,14 +741,24 @@ def validate_wallet_safety(trade: dict, open_trades: int = 0) -> dict:
     pos = WALLET_CONFIG["position_size"]
     tp1 = trade.get("tp1", trade.get("entry", 0))
     entry = trade.get("entry", 0)
-    direction_mult = 1 if "BUY" in trade.get("signal", "") else -1
     profit_pct = abs(tp1 - entry) / max(entry, 1e-10)
+    # Adjust profits for fees
+    gross_tp1_profit = pos * profit_pct
+    fee_cost = pos * TOTAL_FEE_PCT
+    net_tp1_profit = round(gross_tp1_profit - fee_cost, 2)
+    # TP2: if exists, calculate similarly (approx)
+    tp2 = trade.get("tp2")
+    if tp2 and isinstance(tp2, float):
+        gross_tp2_profit = pos * abs(tp2 - entry) / max(entry, 1e-10)
+        net_tp2_profit = round(gross_tp2_profit - fee_cost, 2)
+    else:
+        net_tp2_profit = 0
 
     return {
         "valid":               True,
         "max_loss_usd":        trade["max_loss_usd"],
-        "tp1_profit_usd":      round(pos * profit_pct, 2),
-        "tp2_profit_usd":      round(pos * profit_pct * 1.8, 2),
+        "tp1_profit_usd":      net_tp1_profit,
+        "tp2_profit_usd":      net_tp2_profit,
         "safety_buffer_pct":   liq_buffer,
         "issues":              [],
     }
@@ -716,10 +768,13 @@ def validate_wallet_safety(trade: dict, open_trades: int = 0) -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 def build_trade(tier: str, direction: str, price: float,
                 sl: float, sl_pct: float, tp: float, rr: float,
-                ob: dict, tp_type: str = "") -> dict:
+                ob: dict, tp_type: str = "", ob_inside: bool = False) -> dict:
     """Build standardized trade dict with wallet info."""
     safety_buffer = WALLET_CONFIG["liquidation_pct"] - sl_pct
     pos           = WALLET_CONFIG["position_size"]
+    fee_cost = pos * TOTAL_FEE_PCT
+    gross_tp1 = pos * abs(tp - price) / max(price, 1e-10)
+    net_tp1 = round(gross_tp1 - fee_cost, 2)
 
     return {
         "signal":               direction,
@@ -733,10 +788,11 @@ def build_trade(tier: str, direction: str, price: float,
         "tp1_type":             tp_type,
         "rr":                   round(rr, 2),
         "ob":                   ob,
+        "ob_inside":            ob_inside,
         "margin":               WALLET_CONFIG["margin_per_trade"],
         "position":             pos,
         "max_loss_usd":         round(pos * sl_pct / 100, 2),
-        "tp1_profit_usd":       round(pos * abs(tp - price) / max(price, 1e-10), 2),
+        "tp1_profit_usd":       net_tp1,
         "liquidation_distance": round(safety_buffer, 2),
         "wallet_safe":          safety_buffer > 1.0,
         "reason":               f"{tier} | SL {sl_pct:.2f}% | R:R {rr:.2f}",
@@ -744,22 +800,38 @@ def build_trade(tier: str, direction: str, price: float,
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TIERED TRADE FINDER — V10 Core (replaces generate_signal_v9)
-# Bug 1 Fix: Tier 1 SL = price * (1-0.004), not ob_bottom * 0.998
-# Bug 3 Fix: Single unified flow — no separate signal generator
-# Bug 5 Fix: Null-check on structure["last_low"] / ["last_high"]
+# Bug C Fix: Tier 2 distance absolute, corrected.
+# HTF Gate added (Fix F).
 # ══════════════════════════════════════════════════════════════════════════════
 def find_best_trade(price: float, bull_obs: list, bear_obs: list,
                     structure: dict, htf_bias: str,
-                    df: pd.DataFrame, bos_type: str) -> dict:
+                    df: pd.DataFrame, bos_type: str, regime: str) -> dict:
     """
     Try each tier from tightest SL to loosest.
     Return first tier that gives R:R >= 2.0.
     HOLD only if no tier qualifies.
     """
+    if regime == "VOLATILE":
+        log.warning("⚡ VOLATILE market — HOLD forced")
+        return {
+            "signal": "HOLD", "tier": "HOLD",
+            "entry": price, "sl": price * 0.98,
+            "sl_pct": 2.0, "tp1": None, "tp2": None,
+            "tp1_type": "", "tp2_type": "",
+            "rr": 0.0, "ob": None, "ob_inside": False,
+            "margin": WALLET_CONFIG["margin_per_trade"],
+            "position": WALLET_CONFIG["position_size"],
+            "max_loss_usd": 0, "tp1_profit_usd": 0,
+            "liquidation_distance": WALLET_CONFIG["liquidation_pct"],
+            "wallet_safe": True,
+            "reason": "VOLATILE market — trading paused",
+        }
 
-    # ── TIER 1: Price INSIDE OB ─────────────────────────────────────────────
+    # ── TIER 1: Price INSIDE OB ──────────────────────────────────────────────
     for ob in bull_obs:
         if ob["ob_bottom"] <= price <= ob["ob_top"]:
+            if htf_bias == "BEAR":          # HTF Gate
+                continue
             sl     = price * (1 - 0.004)           # Bug 1 Fix: fixed 0.4%
             sl_pct = (price - sl) / price * 100    # = 0.4% guaranteed
 
@@ -770,10 +842,12 @@ def find_best_trade(price: float, bull_obs: list, bear_obs: list,
                     rr = (tp - price) / max(price - sl, 1e-10)
                     if rr >= 2.0:
                         log.success(f"🥇 TIER 1 BUY — inside demand zone | SL {sl_pct:.2f}% | R:R {rr:.2f}")
-                        return build_trade("TIER_1", "BUY", price, sl, sl_pct, tp, rr, ob, tp_type)
+                        return build_trade("TIER_1", "BUY", price, sl, sl_pct, tp, rr, ob, tp_type, ob_inside=True)
 
     for ob in bear_obs:
         if ob["ob_bottom"] <= price <= ob["ob_top"]:
+            if htf_bias == "BULL":
+                continue
             sl     = price * (1 + 0.004)
             sl_pct = (sl - price) / price * 100
 
@@ -784,12 +858,15 @@ def find_best_trade(price: float, bull_obs: list, bear_obs: list,
                     rr = (price - tp) / max(sl - price, 1e-10)
                     if rr >= 2.0:
                         log.success(f"🥇 TIER 1 SELL — inside supply zone | SL {sl_pct:.2f}% | R:R {rr:.2f}")
-                        return build_trade("TIER_1", "SELL", price, sl, sl_pct, tp, rr, ob, tp_type)
+                        return build_trade("TIER_1", "SELL", price, sl, sl_pct, tp, rr, ob, tp_type, ob_inside=True)
 
-    # ── TIER 2: Price Approaching OB (within 0.5% above OB top) ────────────
+    # ── TIER 2: Price Approaching OB (within 0.5% of OB top) ─────────────────
     for ob in bull_obs:
-        dist_pct = (price - ob["ob_top"]) / max(price, 1e-10) * 100
-        if 0 <= dist_pct <= 0.5:
+        # Bug C Fix: absolute distance from ob_top
+        dist_pct = abs(price - ob["ob_top"]) / max(price, 1e-10) * 100
+        if dist_pct <= 0.5 and price >= ob["ob_top"]:  # price at or above ob_top
+            if htf_bias == "BEAR":
+                continue
             sl     = ob["ob_bottom"] * 0.998
             sl_pct = (price - sl) / max(price, 1e-10) * 100
 
@@ -803,8 +880,12 @@ def find_best_trade(price: float, bull_obs: list, bear_obs: list,
                         return build_trade("TIER_2", "BUY", price, sl, sl_pct, tp, rr, ob, tp_type)
 
     for ob in bear_obs:
-        dist_pct = (ob["ob_bottom"] - price) / max(price, 1e-10) * 100
-        if 0 <= dist_pct <= 0.5:
+        # For bearish OB, check distance from ob_bottom (or ob_top, using absolute)
+        # Using ob_bottom as the reference for approach (price above bottom for sell)
+        dist_pct = abs(price - ob["ob_bottom"]) / max(price, 1e-10) * 100
+        if dist_pct <= 0.5 and price <= ob["ob_bottom"]:
+            if htf_bias == "BULL":
+                continue
             sl     = ob["ob_top"] * 1.002
             sl_pct = (sl - price) / max(price, 1e-10) * 100
 
@@ -817,10 +898,9 @@ def find_best_trade(price: float, bull_obs: list, bear_obs: list,
                         log.success(f"🥈 TIER 2 SELL — approaching supply | SL {sl_pct:.2f}% | R:R {rr:.2f}")
                         return build_trade("TIER_2", "SELL", price, sl, sl_pct, tp, rr, ob, tp_type)
 
-    # ── TIER 3: BOS + Structure Confirmed ───────────────────────────────────
+    # ── TIER 3: BOS + Structure Confirmed ────────────────────────────────────
     if (bos_type == "BOS_UP" and htf_bias == "BULL"
             and structure["type"] in ("UPTREND", "BREAKOUT")):
-        # Bug 5 Fix: null-check on structure keys
         last_low = structure.get("last_low") or structure.get("prev_low")
         if last_low is not None:
             sl     = last_low * 0.998
@@ -867,13 +947,14 @@ def find_best_trade(price: float, bull_obs: list, bear_obs: list,
                 return build_trade("WORST_CASE", sig_label, price,
                                    sl_wc, sl_pct_wc, tp, rr, None, tp_type)
 
-    # ── HOLD ─────────────────────────────────────────────────────────────────
+    # ── HOLD ───────────────────────────────────────────────────────────────────
     log.info("⏸ HOLD — no valid setup in any tier")
     return {
         "signal": "HOLD", "tier": "HOLD",
         "entry": price, "sl": price * 0.98, "sl_pct": 2.0,
         "tp1": None, "tp2": None, "tp1_type": "", "tp2_type": "",
-        "rr": 0.0, "ob": None, "margin": WALLET_CONFIG["margin_per_trade"],
+        "rr": 0.0, "ob": None, "ob_inside": False,
+        "margin": WALLET_CONFIG["margin_per_trade"],
         "position": WALLET_CONFIG["position_size"],
         "max_loss_usd": 0, "tp1_profit_usd": 0,
         "liquidation_distance": WALLET_CONFIG["liquidation_pct"],
@@ -1175,7 +1256,7 @@ def classify_regime(df):
     return "NORMAL", "🔄 Normal"
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ML SYSTEM (unchanged from V9 — Bug 9 Fix: MAE shown as % of price)
+# ML SYSTEM — Bug E Fix: walk-forward MAE computed in price terms
 # ══════════════════════════════════════════════════════════════════════════════
 FEATURE_COLS = [
     "close","RSI","MACD","MACD_Hist","ATR","OBV",
@@ -1231,7 +1312,7 @@ def build_features(df, seq_len=60):
 def walk_forward_validate(X_raw, y_raw, n_splits=5):
     n, seq_len, n_feats = X_raw.shape
     fold_size = n // (n_splits + 1)
-    maes = []
+    price_errors = []  # store absolute error in original price units
     for i in range(1, n_splits + 1):
         train_end = fold_size * i
         val_start = train_end
@@ -1255,11 +1336,19 @@ def walk_forward_validate(X_raw, y_raw, n_splits=5):
         try:
             m = Ridge(alpha=1.0)
             m.fit(X_tr, y_tr)
-            pred = m.predict(X_val)
-            maes.append(mean_absolute_error(y_val, pred))
+            pred_scaled = m.predict(X_val)
+            # Inverse transform to get price predictions and actuals
+            pred_price = fold_y_scaler.inverse_transform(pred_scaled.reshape(-1,1)).ravel()
+            actual_price = fold_y_scaler.inverse_transform(y_val.reshape(-1,1)).ravel()
+            mae_price = np.mean(np.abs(pred_price - actual_price))
+            price_errors.append(mae_price)
         except Exception as e:
             log.warning(f"WF fold {i} failed: {e}")
-    return float(np.mean(maes)) if maes else 0.0
+    if price_errors:
+        wf_mae_price = float(np.mean(price_errors))
+        # Return price-based MAE
+        return wf_mae_price
+    return 0.0
 
 def build_ensemble(X_raw, y_raw):
     n, seq_len, n_feats = X_raw.shape
@@ -1303,9 +1392,9 @@ def build_ensemble(X_raw, y_raw):
             log.warning(f"  {name} failed: {e}")
     total_w = sum(weights.values())
     norm_w  = {k: v / total_w for k, v in weights.items()}
-    wf_mae  = walk_forward_validate(X_raw, y_raw)
-    log.info(f"Walk-forward MAE: {wf_mae:.5f}")
-    return trained, norm_w, val_maes, wf_mae, feat_scaler, y_scaler
+    wf_mae_price = walk_forward_validate(X_raw, y_raw)
+    log.info(f"Walk-forward MAE (price): {wf_mae_price:.5f}")
+    return trained, norm_w, val_maes, wf_mae_price, feat_scaler, y_scaler
 
 def ensemble_predict(trained, weights, X_raw, feat_scaler, y_scaler, feats):
     X_last = X_raw[-1:]
@@ -1368,13 +1457,12 @@ def run_analysis_v10():
             log.info("🧠 Building ensemble model...")
             X_raw, y_raw, feats = build_features(df, cfg["SEQ_LEN"])
             if len(X_raw) >= 50:
-                trained, weights, val_maes, wf_mae, feat_scaler, y_scaler = \
+                trained, weights, val_maes, wf_mae_price, feat_scaler, y_scaler = \
                     build_ensemble(X_raw, y_raw)
                 pred_price = ensemble_predict(
                     trained, weights, X_raw, feat_scaler, y_scaler, feats)
-                # Bug 9 Fix: MAE as % of price
-                wf_mae_price = float(y_scaler.inverse_transform([[wf_mae]])[0][0])
-                wf_mae_pct   = abs(wf_mae_price / max(price, 1e-10)) * 100
+                # Bug E Fix: wf_mae_price is already in price units
+                wf_mae_pct = abs(wf_mae_price / max(price, 1e-10)) * 100
                 log.success(
                     f"Prediction: {pred_price:.6f} "
                     f"({(pred_price-price)/price*100:+.2f}%) | "
@@ -1385,7 +1473,7 @@ def run_analysis_v10():
         # Step 4: Find Best Trade (MAIN SIGNAL — replaces generate_signal_v9)
         trade = find_best_trade(
             price, bull_obs, bear_obs,
-            structure, htf_bias, df, bos_type
+            structure, htf_bias, df, bos_type, regime
         )
 
         # Step 5: Add TP2 if trade found
@@ -1468,7 +1556,7 @@ st.session_state["open_trades"] = open_trades_count
 margin_used = open_trades_count * WALLET_CONFIG["margin_per_trade"]
 margin_pct  = margin_used / WALLET_CONFIG["total_balance"] * 100
 if margin_used > 0:
-    st.sidebar.progress(int(margin_pct), f"${margin_used}/${WALLET_CONFIG['total_balance']} margin used")
+    st.sidebar.progress(int(margin_pct), f"${margin_used}/{WALLET_CONFIG['total_balance']} margin used")
 
 if run_btn:
     with st.spinner("Analysing… (30–60 sec on first run)"):
@@ -1519,7 +1607,7 @@ if run_btn:
             unsafe_allow_html=True)
         st.caption(res.get("reason",""))
 
-        # ── Tier Pyramid (which tier fired) ─────────────────────────────
+        # ── Tier Pyramid ─────────────────────────────────────────────────
         st.subheader("🏆 Tier System")
         tier_cols = st.columns(5)
         all_tiers = ["TIER_1","TIER_2","TIER_3","WORST_CASE","HOLD"]
@@ -1538,7 +1626,7 @@ if run_btn:
 
         st.markdown("---")
 
-        # ── Key Metrics ─────────────────────────────────────────────────
+        # ── Key Metrics ──────────────────────────────────────────────────
         c1,c2,c3,c4,c5,c6 = st.columns(6)
         c1.metric("Entry",      f"{res['entry']:.6f}")
         sl_label = f"SL ({res.get('sl_pct', 0):.2f}%)"
@@ -1661,11 +1749,10 @@ if run_btn:
                        "🔽" if res["bos_type"]=="BOS_DOWN" else "⏸"
             st.metric("Break of Structure", f"{bos_icon} {res['bos_type']}", res["bos_desc"])
         with ob_c2:
-            nearest_ob = res.get("ob")
             ob_side = "—"
             if res.get("tier") in ("TIER_1","TIER_2") and res.get("ob_inside"):
                 ob_side = "BULL" if "BUY" in res["signal"] else "BEAR"
-            st.metric("Active Tier", res["tier"], res.get("reason",""))
+            st.metric("Active Tier", res["tier"], f"OB Inside: {ob_side}")
         with ob_c3:
             tob = res.get("ob") or {}
             st.metric("Order Book Signal",
@@ -1700,7 +1787,7 @@ if run_btn:
                 f'<div style="color:#8b949e;font-size:0.8rem;">TP1 — {tp1_type[:20]}</div>'
                 f'<div style="color:{tp1_color};font-weight:bold;font-size:1.1rem;">'
                 f'{tp1_disp}</div>'
-                f'<div style="color:#56d364;font-size:0.75rem;">+${pnl1:.2f} profit</div>'
+                f'<div style="color:#56d364;font-size:0.75rem;">+${pnl1:.2f} net profit</div>'
                 f'</div>', unsafe_allow_html=True)
         with liq_c4:
             st.markdown('<div style="text-align:center;padding-top:20px;'
@@ -1708,17 +1795,15 @@ if run_btn:
         with liq_c5:
             tp2_disp = f"{res['tp2']:.6f}" if isinstance(res.get("tp2"), float) else "—"
             tp2_type = res.get("tp2_type","")
-            pos  = WALLET_CONFIG["position_size"]
-            tp2_profit = 0
-            if isinstance(res.get("tp2"), float) and isinstance(res.get("tp1"), float):
-                tp2_profit = round(pos * abs(res["tp2"] - res["entry"]) / max(res["entry"], 1e-10), 2)
+            safety_data = res.get("safety", {})
+            tp2_profit = safety_data.get("tp2_profit_usd", 0)
             st.markdown(
                 f'<div style="background:#0d1117;border:1px solid #56d364;'
                 f'border-radius:8px;padding:12px;text-align:center;">'
                 f'<div style="color:#8b949e;font-size:0.8rem;">TP2 — {tp2_type[:20]}</div>'
                 f'<div style="color:#56d364;font-weight:bold;font-size:1.1rem;">'
                 f'{tp2_disp}</div>'
-                f'<div style="color:#56d364;font-size:0.75rem;">+${tp2_profit:.2f} profit</div>'
+                f'<div style="color:#56d364;font-size:0.75rem;">+${tp2_profit:.2f} net profit</div>'
                 f'</div>', unsafe_allow_html=True)
 
         st.markdown("---")
@@ -1762,7 +1847,6 @@ if run_btn:
     with tab3:
         st.subheader("💼 Wallet & Position Management")
 
-        # Trade Setup Table
         w1, w2, w3, w4, w5 = st.columns(5)
         w1.metric("Total Wallet",   f"${WALLET_CONFIG['total_balance']}")
         w2.metric("Margin/Trade",   f"${WALLET_CONFIG['margin_per_trade']}")
@@ -1807,18 +1891,18 @@ if run_btn:
 
         st.markdown("---")
 
-        # Scenario Table
+        # Scenario Table (adjusted for fees)
         st.subheader("📋 Trade Scenario Analysis  ($200 position)")
         pos_size = WALLET_CONFIG["position_size"]
         price_e  = res.get("entry", 1)
         tp1_val  = res.get("tp1", price_e)
         tp2_val  = res.get("tp2", price_e)
         sl_val   = res.get("sl",  price_e)
-        direction_mult = 1 if "BUY" in res.get("signal","") else -1
+        fee_cost = pos_size * TOTAL_FEE_PCT
 
         sl_loss  = round(pos_size * sl_pct_trade / 100, 2)
-        tp1_gain = round(pos_size * abs((tp1_val or price_e) - price_e) / max(price_e, 1e-10), 2) if isinstance(tp1_val, float) else 0
-        tp2_gain = round(pos_size * abs((tp2_val or price_e) - price_e) / max(price_e, 1e-10), 2) if isinstance(tp2_val, float) else 0
+        tp1_gain = round(pos_size * abs((tp1_val or price_e) - price_e) / max(price_e, 1e-10) - fee_cost, 2) if isinstance(tp1_val, float) else 0
+        tp2_gain = round(pos_size * abs((tp2_val or price_e) - price_e) / max(price_e, 1e-10) - fee_cost, 2) if isinstance(tp2_val, float) else 0
         five_sl  = round(sl_loss * 5, 2)
         bal_after_5sl = WALLET_CONFIG["total_balance"] - five_sl
 
@@ -1843,7 +1927,6 @@ if run_btn:
     with tab4:
         st.subheader("🏗 Market Context")
 
-        # Structure
         mkt_c1, mkt_c2 = st.columns(2)
         with mkt_c1:
             st.subheader("📐 Market Structure")
@@ -1975,9 +2058,3 @@ else:
     st.markdown("""
 ---
 ### 💼 Wallet Philosophy
-```
-Wallet: $100  |  Margin/Trade: $10  |  Leverage: 20x  |  Position: $200
-Liquidation: 4.5% move against  |  Our SL: max 2.0%  |  Buffer: ≥2.5%
-Max 2 concurrent trades  |  R:R always ≥ 2.0
-```
-    """)
